@@ -1,0 +1,178 @@
+// SIAP PTSP — Sistem Informasi Antrian PTSP
+// Prisma Schema v7 — MySQL
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "mysql"
+}
+
+// ─────────────────────────────────────────────
+// Enum
+// ─────────────────────────────────────────────
+
+enum Role {
+  admin
+  petugas
+  satpam
+}
+
+enum StatusTiket {
+  menunggu_checkin
+  siap_dipanggil
+  dipanggil
+  selesai
+  tidak_hadir
+  hangus
+}
+
+// ─────────────────────────────────────────────
+// Users — Admin, Petugas, Satpam
+// ─────────────────────────────────────────────
+
+model User {
+  id            Int      @id @default(autoincrement())
+  nama          String   @db.VarChar(100)
+  username      String   @unique @db.VarChar(50)
+  passwordHash  String   @map("password_hash") @db.VarChar(255)
+  role          Role
+  loket         String?  @db.VarChar(50) // hanya untuk petugas
+  aktif         Boolean  @default(true)
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  tiket         Tiket[]
+  logAktivitas  LogAktivitas[]
+
+  @@map("users")
+}
+
+// ─────────────────────────────────────────────
+// Pemohon — masyarakat yang mengambil nomor
+// ─────────────────────────────────────────────
+
+model Pemohon {
+  id           Int      @id @default(autoincrement())
+  nik          String   @unique @db.VarChar(16)
+  nama         String   @db.VarChar(100)
+  noHp         String   @map("no_hp") @db.VarChar(20)
+  passwordHash String   @map("password_hash") @db.VarChar(255)
+  aktif        Boolean  @default(true)
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  tiket        Tiket[]
+
+  @@map("pemohon")
+}
+
+// ─────────────────────────────────────────────
+// Layanan — 4 jenis layanan PTSP
+// ─────────────────────────────────────────────
+
+model Layanan {
+  id    Int    @id @default(autoincrement())
+  kode  String @unique @db.VarChar(10)
+  nama  String @db.VarChar(100)
+  aktif Boolean @default(true)
+
+  tiket  Tiket[]
+  kuota  Kuota[]
+
+  @@map("layanan")
+}
+
+// ─────────────────────────────────────────────
+// Sesi — 2 sesi harian (Pagi & Siang)
+// ─────────────────────────────────────────────
+
+model Sesi {
+  id          Int    @id @default(autoincrement())
+  nama        String @db.VarChar(50)
+  jamMulai    String @map("jam_mulai") @db.VarChar(5)   // format "08:00"
+  jamSelesai  String @map("jam_selesai") @db.VarChar(5) // format "12:00"
+  aktif       Boolean @default(true)
+
+  tiket  Tiket[]
+  kuota  Kuota[]
+
+  @@map("sesi")
+}
+
+// ─────────────────────────────────────────────
+// Kuota — per layanan per sesi per hari
+// ─────────────────────────────────────────────
+
+model Kuota {
+  id             Int      @id @default(autoincrement())
+  layananId      Int      @map("layanan_id")
+  sesiId         Int      @map("sesi_id")
+  tanggal        DateTime @db.Date
+  kuotaMaksimal  Int      @map("kuota_maksimal")
+  kuotaTerpakai  Int      @default(0) @map("kuota_terpakai")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  layanan Layanan @relation(fields: [layananId], references: [id])
+  sesi    Sesi    @relation(fields: [sesiId], references: [id])
+
+  @@unique([layananId, sesiId, tanggal])
+  @@map("kuota")
+}
+
+// ─────────────────────────────────────────────
+// Tiket — nomor antrian
+// ─────────────────────────────────────────────
+
+model Tiket {
+  id              Int         @id @default(autoincrement())
+  nomor           String      @db.VarChar(20)  // contoh: INF-001
+  layananId       Int         @map("layanan_id")
+  sesiId          Int         @map("sesi_id")
+  tanggal         DateTime    @db.Date
+  pemohonId       Int         @map("pemohon_id")
+  status          StatusTiket @default(menunggu_checkin)
+  waktuAmbil      DateTime    @default(now()) @map("waktu_ambil")
+  waktuCheckin    DateTime?   @map("waktu_checkin")
+  waktuDipanggil  DateTime?   @map("waktu_dipanggil")
+  waktuSelesai    DateTime?   @map("waktu_selesai")
+  petugasId       Int?        @map("petugas_id")
+  createdAt       DateTime    @default(now()) @map("created_at")
+  updatedAt       DateTime    @updatedAt @map("updated_at")
+
+  layanan  Layanan  @relation(fields: [layananId], references: [id])
+  sesi     Sesi     @relation(fields: [sesiId], references: [id])
+  pemohon  Pemohon  @relation(fields: [pemohonId], references: [id])
+  petugas  User?    @relation(fields: [petugasId], references: [id])
+
+  logAktivitas LogAktivitas[]
+
+  // Satu NIK hanya satu tiket aktif per sesi per tanggal
+  @@unique([nomor, tanggal])
+  @@index([pemohonId, sesiId, tanggal])
+  @@index([layananId, sesiId, tanggal, status])
+  @@map("tiket")
+}
+
+// ─────────────────────────────────────────────
+// Log Aktivitas — audit trail semua aksi staf
+// ─────────────────────────────────────────────
+
+model LogAktivitas {
+  id       Int      @id @default(autoincrement())
+  userId   Int?     @map("user_id")   // null jika aksi sistem (hangus otomatis)
+  tiketId  Int?     @map("tiket_id")
+  aksi     String   @db.VarChar(100)
+  detail   String?  @db.Text
+  waktu    DateTime @default(now())
+
+  user   User?   @relation(fields: [userId], references: [id])
+  tiket  Tiket?  @relation(fields: [tiketId], references: [id])
+
+  @@index([waktu])
+  @@index([userId])
+  @@map("log_aktivitas")
+}
